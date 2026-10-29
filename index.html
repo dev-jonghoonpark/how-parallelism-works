@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How Parallelism Works — 데이터·텐서·파이프라인·컨텍스트·전문가 병렬화와 Llama 3의 4D 병렬화</title>
+<meta name="description" content="초거대 모델을 여러 GPU에 나눠 학습하는 다섯 가지 병렬화(데이터 병렬과 ZeRO/FSDP, Megatron식 텐서 병렬, Mesh-TensorFlow 레이아웃, GPipe 계열 파이프라인, 컨텍스트 병렬, 전문가 병렬)를 브라우저에서 계산하고 그려 보며 배우는 인터랙티브 교육 자료. Llama 3 405B가 16,384개 H100에 TP 8 × CP × PP 16 × DP를 어떻게 배치했는지 그림으로 따라갑니다.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<style>
+:root{
+  color-scheme: light;
+  --surface-1:#fcfcfb;
+  --page:#f9f9f7;
+  --text-primary:#0b0b0b;
+  --text-secondary:#52514e;
+  --muted:#898781;
+  --grid:#e1e0d9;
+  --axis:#c3c2b7;
+  --border:rgba(11,11,11,0.10);
+  --s1:#2a78d6;
+  --s2:#eb6834;
+  --s3:#1baf7a;
+  --s4:#8b5cf6;
+  --s8:#e34948;
+  --warn:#fab219;
+  --good:#0ca30c;
+  --wash:rgba(42,120,214,0.08);
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --surface-1:#1a1a19;
+  --page:#0d0d0d;
+  --text-primary:#ffffff;
+  --text-secondary:#c3c2b7;
+  --muted:#898781;
+  --grid:#2c2c2a;
+  --axis:#383835;
+  --border:rgba(255,255,255,0.10);
+  --s1:#3987e5;
+  --s2:#d95926;
+  --s3:#199e70;
+  --s4:#a78bfa;
+  --s8:#e66767;
+  --warn:#fab219;
+  --good:#0ca30c;
+  --wash:rgba(57,135,229,0.14);
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%; scroll-behavior:smooth}
+body{
+  margin:0; background:var(--page); color:var(--text-primary);
+  font-family:system-ui,-apple-system,"Segoe UI","Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+  font-size:16px; line-height:1.75; letter-spacing:-0.01em;
+}
+.wrap{max-width:880px;margin:0 auto;padding:0 16px 120px}
+header.hero{padding:56px 0 28px;border-bottom:1px solid var(--border);margin-bottom:8px}
+h1{font-size:clamp(28px,5.2vw,42px);line-height:1.25;margin:0 0 12px;letter-spacing:-0.03em}
+.sub{color:var(--text-secondary);font-size:17px;margin:0}
+.kicker{font-size:12px;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);font-weight:600;margin:0 0 10px}
+h2{font-size:clamp(21px,3.4vw,27px);margin:56px 0 6px;letter-spacing:-0.02em;line-height:1.3}
+h3{font-size:18px;margin:34px 0 6px;letter-spacing:-0.015em}
+p{margin:12px 0}
+ul,ol{margin:12px 0;padding-left:22px}
+li{margin:6px 0}
+strong{font-weight:650}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.9em;background:var(--wash);padding:1px 5px;border-radius:4px}
+a{color:var(--s1)}
+.demo{background:var(--surface-1);border:1px solid var(--border);border-radius:14px;padding:18px;margin:24px 0}
+.demo h4{margin:0 0 2px;font-size:15px;color:var(--text-primary);font-weight:650}
+.demo .cap{color:var(--muted);font-size:13px;margin:0 0 14px;line-height:1.6}
+canvas{display:block;width:100%;border-radius:8px;background:var(--surface-1);touch-action:manipulation}
+.ctrls{display:flex;flex-wrap:wrap;gap:14px 22px;margin:14px 0 4px;align-items:flex-end}
+.ctrl{flex:1 1 210px;min-width:170px}
+.ctrl label{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;color:var(--text-secondary);margin-bottom:4px;gap:10px}
+.ctrl label b{font-variant-numeric:tabular-nums;color:var(--text-primary);font-weight:650;font-size:13px}
+input[type=range]{width:100%;accent-color:var(--s1);height:22px;margin:0}
+.btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+button{font:inherit;font-size:13px;font-weight:600;padding:7px 14px;border-radius:8px;cursor:pointer;
+  border:1px solid var(--border);background:var(--surface-1);color:var(--text-primary);transition:background .12s}
+button:hover{background:var(--wash)}
+button[aria-pressed=true]{background:var(--wash);border-color:var(--s1)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12.5px;color:var(--text-secondary);margin:10px 0 0}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
+.readout{display:flex;flex-wrap:wrap;gap:8px 26px;margin-top:12px;font-size:13px;color:var(--text-secondary)}
+.readout b{display:block;font-size:19px;color:var(--text-primary);font-weight:650;line-height:1.3;letter-spacing:-0.02em;font-variant-numeric:tabular-nums}
+.eq{background:var(--surface-1);border:1px solid var(--border);border-left:3px solid var(--s1);
+  border-radius:0 10px 10px 0;padding:14px 18px;margin:18px 0;overflow-x:auto;text-align:center}
+.eq .note{display:block;font-size:12.5px;color:var(--muted);margin:6px 0 0;line-height:1.55;text-align:left}
+.tw{overflow-x:auto;margin:18px 0;border:1px solid var(--border);border-radius:12px;background:var(--surface-1)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:9px 13px;text-align:left;border-bottom:1px solid var(--border);vertical-align:middle}
+th{font-weight:650;font-size:12.5px;color:var(--text-secondary);background:var(--page)}
+tr:last-child td{border-bottom:none}
+td.num,th.num{font-variant-numeric:tabular-nums;text-align:right}
+td.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+.note{border-left:3px solid var(--axis);padding:2px 0 2px 16px;margin:18px 0;color:var(--text-secondary);font-size:14.5px}
+.key{border:1px solid var(--border);border-left:3px solid var(--s2);background:var(--surface-1);
+  border-radius:0 10px 10px 0;padding:14px 18px;margin:20px 0}
+.key .lbl{font-size:11.5px;font-weight:700;letter-spacing:0.1em;color:var(--s2);display:block;margin-bottom:4px}
+.key p{margin:0}
+nav.toc{background:var(--surface-1);border:1px solid var(--border);border-radius:14px;padding:18px 22px;margin:26px 0}
+nav.toc ol{margin:6px 0 0;padding-left:20px;font-size:14.5px}
+nav.toc a{text-decoration:none;color:var(--text-primary)}
+nav.toc a:hover{color:var(--s1)}
+.q{border:1px solid var(--border);border-radius:10px;background:var(--surface-1);padding:16px 18px;margin:14px 0}
+.q h4{margin:0 0 8px;font-size:15px;color:var(--text-primary)}
+.q .opt{display:flex;gap:9px;align-items:flex-start;padding:7px 10px;border:1px solid var(--border);
+  border-radius:8px;margin:6px 0;cursor:pointer;font-size:14px;transition:border-color .12s}
+.q .opt:hover{border-color:var(--s1)}
+.q .opt input{margin-top:5px;accent-color:var(--s1)}
+.q .opt.correct{border-color:var(--good);background:rgba(12,163,12,0.08)}
+.q .opt.wrong{border-color:var(--s8);background:rgba(227,73,72,0.07)}
+.q .expl{display:none;font-size:13.5px;color:var(--text-secondary);border-left:3px solid var(--good);
+  padding:2px 0 2px 12px;margin-top:10px;line-height:1.65}
+.q .expl.bad{border-left-color:var(--s8)}
+.q .expl.show{display:block}
+.quiz-score{font-size:15px;font-weight:700;margin-top:14px}
+.tog{position:fixed;top:14px;right:14px;z-index:10;border-radius:999px;padding:7px 13px;
+  background:var(--surface-1);border:1px solid var(--border);font-size:12.5px}
+footer{margin-top:70px;padding-top:22px;border-top:1px solid var(--border);color:var(--muted);font-size:13px}
+footer a{color:var(--text-secondary)}
+.refs{font-size:13px;color:var(--text-secondary);line-height:1.7}
+.easy{background:var(--surface-1);border:1px solid var(--border);border-left:3px solid var(--s3);border-radius:0 14px 14px 0;padding:18px 20px;margin:24px 0}
+.easy .lbl{font-size:11.5px;font-weight:700;letter-spacing:0.1em;color:var(--s3);display:block;margin-bottom:2px}
+.easy h3{margin:0 0 8px}
+.easy ol{padding-left:20px}
+.easy .big{font-size:17px;text-align:center;margin:10px 0;font-weight:650}
+.sw{display:grid;grid-template-columns:150px 1fr 64px;gap:8px 10px;align-items:center;font-size:13px;margin-top:12px}
+.sw .bar{position:relative;height:18px;background:var(--page);border:1px solid var(--border);border-radius:4px}
+.sw .bar i{position:absolute;top:0;bottom:0;border-radius:3px}
+.sw .bar:after{content:'';position:absolute;left:50%;top:-3px;bottom:-3px;border-left:1px solid var(--axis)}
+.sw b{font-variant-numeric:tabular-nums;text-align:right}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media (max-width:640px){.split{grid-template-columns:1fr}}
+.split h5{margin:4px 0 0;font-size:13px;color:var(--text-secondary);font-weight:650}
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13px;margin:16px 0;justify-content:center}
+.flow span{border:1px solid var(--border);background:var(--surface-1);border-radius:8px;padding:5px 10px;font-weight:600}
+.flow em{color:var(--muted);font-style:normal}
+sup.fn{font-size:0.72em;line-height:0;margin-left:1px}
+sup.fn a{text-decoration:none;font-weight:700;padding:0 2px}
+.footnotes{margin-top:64px;padding-top:18px;border-top:1px solid var(--border);font-size:14.5px;color:var(--text-secondary)}
+.footnotes h2{font-size:18px;margin:0 0 10px;color:var(--text-primary)}
+.footnotes ol{padding-left:22px}
+.footnotes li:target{background:var(--wash);border-radius:8px}
+.footnotes p{margin:10px 0}
+.footnotes .tw{font-size:13.5px}
+.footnotes .back{text-decoration:none;margin-left:4px}
+.pill{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 8px;border-radius:999px;background:var(--wash);color:var(--s1);margin-left:6px;vertical-align:2px}
+
+@media (max-width:640px){.tog{position:absolute}}
+.ax-tp{color:var(--s1)}.ax-cp{color:var(--s4)}.ax-pp{color:var(--s2)}.ax-dp{color:var(--s3)}.ax-ep{color:var(--s8)}
+.tag{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 8px;border-radius:999px;border:1px solid currentColor;margin-right:4px}
+svg.fig{display:block;width:100%;height:auto;margin:6px 0}
+svg.fig text{font-family:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;fill:var(--text-primary)}
+svg.fig .m{fill:var(--muted)}
+.gpu{cursor:pointer}
+.info{font-size:13.5px;color:var(--text-secondary);margin-top:10px;line-height:1.7;min-height:3.4em}
+.info b{color:var(--text-primary)}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;flex-wrap:wrap}
+.seg button{border:none;border-radius:0;border-right:1px solid var(--border)}
+.seg button:last-child{border-right:none}
+.mini{font-size:12.5px;color:var(--muted);margin:8px 0 0}
+</style>
+</head>
+<body>
+<button class="tog" id="themeBtn" type="button">◐ 다크</button>
+<div class="wrap">
+<header class="hero">
+  <p class="kicker">초거대 모델의 탄생 · 분산 학습</p>
+  <h1>How Parallelism Works — 모델 하나를 GPU 만 대에 나눠 싣는 법</h1>
+  <p class="sub">405B 모델은 학습 상태만 6TB가 넘어서 80GB짜리 GPU 한 대에는 절대 들어가지 않습니다. 그래서 무언가를 잘라 나눠야 하는데, 무엇을 자르느냐에 따라 병렬화의 이름이 달라집니다. 배치를 자르면 <span class="ax-dp"><strong>데이터 병렬</strong></span>, 층 내부의 행렬을 자르면 <span class="ax-tp"><strong>텐서 병렬</strong></span>, 층 묶음을 자르면 <span class="ax-pp"><strong>파이프라인 병렬</strong></span>, 시퀀스를 자르면 <span class="ax-cp"><strong>컨텍스트 병렬</strong></span>, MoE의 전문가를 자르면 <span class="ax-ep"><strong>전문가 병렬</strong></span>입니다. 이 페이지는 각 방식을 직접 계산해 보고, 마지막에 Meta가 Llama 3 405B를 16,384개 H100에 실제로 어떻게 배치했는지 그림으로 따라갑니다.</p>
+</header>
+
+<div class="key">
+  <span class="lbl">이 자료의 축</span>
+  <p><strong>하나만 쓰는 표준은 없고, 여러 방식을 섞는 하이브리드가 표준이다.</strong> 각 방식은 자르는 대상이 다르고, 그래서 필요한 통신의 양과 빈도도 다르다. 통신을 가장 자주, 가장 많이 하는 방식(텐서 병렬)은 가장 빠른 연결(한 서버 안의 NVLink)에 두고, 통신이 드물고 계산과 겹치기 쉬운 방식(데이터 병렬)은 가장 바깥에 둔다. 무거운 일은 데이터 병렬(ZeRO/FSDP)과 텐서 병렬이 나눠 맡고, 파이프라인은 그래도 모델이 안 들어갈 때 노드 사이에 얇게 덧댄다.</p>
+</div>
+
+<nav class="toc">
+  <strong>학습 경로</strong>
+  <ol>
+    <li><a href="#s1">왜 잘라야 하나: 405B 모델의 학습 메모리</a></li>
+    <li><a href="#s2">네 논문, 네 가지 자르기</a></li>
+    <li><a href="#s3">데이터 병렬과 ZeRO / FSDP</a></li>
+    <li><a href="#s4">텐서 병렬 (Megatron-LM)</a></li>
+    <li><a href="#s5">레이아웃으로 일반화하기 (Mesh-TensorFlow)</a></li>
+    <li><a href="#s6">파이프라인 병렬 (GPipe 계열): 왜 "최후 수단"인가</a></li>
+    <li><a href="#s7">컨텍스트 병렬: 긴 시퀀스 자르기</a></li>
+    <li><a href="#s8">전문가 병렬: MoE의 전문가 나누기</a></li>
+    <li><a href="#s9">Llama 3 405B의 4D 병렬화</a></li>
+    <li><a href="#s10">정리: 축을 고르는 순서</a></li>
+    <li><a href="#s11">확인 퀴즈</a></li>
+  </ol>
+</nav>
+
+<!-- ───────── 1 ───────── -->
+<h2 id="s1">1. 왜 잘라야 하나: 405B 모델의 학습 메모리</h2>
+<p>학습할 때 GPU 메모리에는 가중치만 올라가지 않습니다. 요즘 표준인 혼합 정밀도 + Adam 학습에서는 파라미터 하나에 다음이 붙습니다.</p>
+<div class="tw"><table>
+  <tr><th>항목</th><th>정밀도</th><th class="num">파라미터당 바이트</th></tr>
+  <tr><td>가중치 (순전파·역전파용)</td><td>bf16</td><td class="num">2</td></tr>
+  <tr><td>기울기</td><td>bf16</td><td class="num">2</td></tr>
+  <tr><td>옵티마이저 상태: fp32 마스터 가중치 + Adam m + Adam v</td><td>fp32 × 3</td><td class="num">12</td></tr>
+  <tr><td><strong>합계</strong></td><td></td><td class="num"><strong>16</strong></td></tr>
+</table></div>
+<p>405B × 16바이트 ≈ <strong>6.5TB</strong>입니다. H100 한 대의 메모리는 80GB이니, 활성(순전파 중간 결과)을 빼고 상태만 담아도 GPU가 최소 81대 필요합니다. 이 16바이트 분해는 ZeRO 논문이 쓴 것과 같고(옵티마이저 몫을 K = 12로 둡니다), 아래 데모 1에서 그대로 씁니다. 이렇게 "한 대에 안 들어간다"는 사실이 모든 병렬화의 출발점입니다. 다만 어디를 자르느냐에 따라 대가가 달라집니다.</p>
+
+<!-- ───────── 2 ───────── -->
+<h2 id="s2">2. 네 논문, 네 가지 자르기</h2>
+<p>초거대 모델 학습의 계보를 정리할 때 함께 나오는 네 논문은 "모델 병렬화"로 한데 묶이곤 하지만, 자르는 대상이 모두 다릅니다. "순수 파이프라인 병렬화는 마지못한 최후 수단"이라는 말에서 파이프라인은 이 중 <strong>GPipe 계열 하나</strong>만 가리킵니다. 나머지 셋은 파이프라인이 아니라, 오히려 파이프라인 대신 무거운 일을 맡게 된 쪽입니다.</p>
+<div class="tw"><table>
+  <tr><th>논문</th><th>병렬화 종류</th><th>무엇을 자르나</th><th>주요 통신</th></tr>
+  <tr><td><strong>GPipe</strong> (Huang et al., 2019)</td><td><span class="tag ax-pp">PP</span> 파이프라인</td><td>층 묶음(스테이지)을 장치마다. 미니배치는 마이크로배치로</td><td>스테이지 사이 활성 전달 (점대점)</td></tr>
+  <tr><td><strong>Megatron-LM</strong> (Shoeybi et al., 2019)</td><td><span class="tag ax-tp">TP</span> 텐서</td><td>한 층 안의 행렬곱 (열·행 방향)</td><td>층마다 활성 all-reduce</td></tr>
+  <tr><td><strong>Mesh-TensorFlow</strong> (Shazeer et al., 2018)</td><td>일반화된 샤딩</td><td>텐서의 어느 차원을 장치 격자의 어느 축에 나눌지 레이아웃으로 지정</td><td>레이아웃에 따라 결정</td></tr>
+  <tr><td><strong>ZeRO</strong> (Rajbhandari et al., 2020)</td><td><span class="tag ax-dp">DP</span> 데이터 (개선)</td><td>배치. 그리고 옵티마이저 상태·기울기·파라미터의 중복 저장을 없앰 (FSDP의 원형)</td><td>reduce-scatter + all-gather</td></tr>
+</table></div>
+<p class="note">Megatron-LM은 2021년 후속 논문(Narayanan et al., SC21)에서 파이프라인(interleaved 1F1B)을 더해 TP × PP × DP의 <strong>3D 병렬화</strong>로 확장했습니다. GPipe 자료에 나오는 "Megatron 스케줄"이 이것입니다. 그래도 Megatron-LM의 대표 기여는 텐서 병렬로 봅니다.</p>
+
+<!-- ───────── 3 ───────── -->
+<h2 id="s3">3. 데이터 병렬과 ZeRO / FSDP <span class="tag ax-dp">DP</span></h2>
+<p>가장 단순한 방법은 <strong>모델은 통째로 복제하고 배치만 나누는 것</strong>입니다. GPU N대가 각자 다른 데이터로 기울기를 구한 뒤 all-reduce로 평균을 내고, 모두 같은 갱신을 합니다. 통신은 스텝마다 한 번이고, 다음 층의 역전파와 겹쳐서 숨기기도 쉽습니다. 문제는 메모리입니다. N대 모두가 16바이트 × 파라미터 수를 똑같이 들고 있으니, 모델이 한 대에 안 들어가면 데이터 병렬만으로는 답이 없습니다.</p>
+<p>ZeRO는 이 <strong>중복</strong>을 겨냥합니다. 어차피 N대가 같은 값을 들고 있으니, 1/N씩 나눠 맡고 필요할 때만 모으자는 겁니다. 나누는 대상을 단계적으로 넓혀 세 단계가 됩니다.</p>
+<div class="eq">
+  $$\underbrace{(2+2+K)\Psi}_{\text{DP}}\;\to\;\underbrace{(2+2)\Psi+\tfrac{K\Psi}{N}}_{\text{ZeRO-1: 옵티마이저 상태}}\;\to\;\underbrace{2\Psi+\tfrac{(2+K)\Psi}{N}}_{\text{ZeRO-2: + 기울기}}\;\to\;\underbrace{\tfrac{(2+2+K)\Psi}{N}}_{\text{ZeRO-3: + 파라미터}}$$
+  <span class="note">Ψ는 파라미터 수, K = 12는 옵티마이저 몫, N은 데이터 병렬 크기입니다. ZeRO 논문의 그림 1이 Ψ = 7.5B, N = 64로 든 예(120GB → 31.4 / 16.6 / 1.9GB)를 데모의 "논문 예" 버튼으로 확인할 수 있습니다.</span>
+</div>
+
+<div class="demo">
+  <h4>데모 1 · GPU 한 대에 상태가 얼마나 남나</h4>
+  <p class="cap">모델 크기 Ψ와 데이터 병렬 크기 N을 바꾸면 네 방식의 장치당 상태 메모리(활성 제외)를 계산합니다. 세로 점선은 H100 80GB입니다. 막대가 그림 밖으로 넘치면 끝이 잘린 채 값만 적힙니다. 아래 그림은 GPU 4대일 때 각 GPU가 실제로 들고 있는 조각입니다(색칠된 칸만 보유).</p>
+  <div class="btns" id="d1pre"></div>
+  <div class="ctrls">
+    <div class="ctrl"><label>파라미터 수 Ψ <b id="d1Pv"></b></label><input type="range" id="d1P" min="0" max="100" step="0.01" value="100"></div>
+    <div class="ctrl"><label>데이터 병렬 크기 N <b id="d1Nv"></b></label><input type="range" id="d1N" min="0" max="12" step="1" value="6"></div>
+  </div>
+  <canvas id="d1cv" height="190"></canvas>
+  <div class="legend"><span><i style="background:var(--s1)"></i>가중치 2Ψ</span><span><i style="background:var(--s3)"></i>기울기 2Ψ</span><span><i style="background:var(--s4)"></i>옵티마이저 상태 12Ψ</span></div>
+  <div class="ctrls"><div class="seg" id="d1st"><button data-v="0" aria-pressed="false">DP</button><button data-v="1" aria-pressed="false">ZeRO-1</button><button data-v="2" aria-pressed="false">ZeRO-2</button><button data-v="3" aria-pressed="true">ZeRO-3 / FSDP</button></div></div>
+  <canvas id="d1hold" height="150"></canvas>
+  <div class="readout" id="d1out"></div>
+</div>
+<p>Ψ = 405B, N = 64로 놓고 ZeRO-3를 골라 보세요. 장치당 약 101GB로, 활성을 넣기도 전에 80GB를 넘습니다. N을 512까지 늘리면 상태는 13GB 정도로 줄지만, 이번에는 매 층의 순전파·역전파마다 파라미터를 512대에서 all-gather해야 하고, 층 하나의 활성 자체는 전혀 줄지 않습니다. 데이터 병렬은 <strong>배치를 자를 뿐 층을 자르지 않기</strong> 때문입니다. 여기서 텐서 병렬이 필요해집니다.</p>
+<p class="note">통신량: 보통 데이터 병렬의 all-reduce는 reduce-scatter + all-gather 두 단계라 GPU당 약 2Ψ를 주고받습니다. ZeRO-1·2는 같은 2Ψ로 끝나고, ZeRO-3는 파라미터를 순전파·역전파에서 한 번씩 더 모아 약 1.5배(3Ψ)가 됩니다. PyTorch의 <strong>FSDP</strong>(Zhao et al., 2023)가 ZeRO-3를 구현한 것이고, 옵션으로 ZeRO-2처럼 동작하게 할 수도 있습니다.</p>
+
+<!-- ───────── 4 ───────── -->
+<h2 id="s4">4. 텐서 병렬 (Megatron-LM) <span class="tag ax-tp">TP</span></h2>
+<p>텐서 병렬은 <strong>층 하나의 행렬곱 자체를 여러 GPU로 쪼갭니다.</strong> Megatron-LM의 요령은 Transformer의 MLP와 어텐션을 통신이 최소가 되게 자르는 방법을 찾은 것입니다. MLP <code>Z = GeLU(X·A)·B</code>에서 첫 행렬 A는 <strong>열 방향</strong>으로 자릅니다. 그러면 GPU마다 \(Y_i = \mathrm{GeLU}(X A_i)\)를 혼자 계산할 수 있습니다(GeLU는 원소별이라 열을 섞지 않습니다). 둘째 행렬 B는 <strong>행 방향</strong>으로 잘라 \(Z_i = Y_i B_i\)를 구하고, 마지막에 \(Z = \sum_i Z_i\)를 all-reduce로 한 번 더합니다.</p>
+<svg class="fig" viewBox="0 0 840 230" role="img" aria-label="Megatron MLP 텐서 병렬: A를 열로, B를 행으로 나누고 끝에 all-reduce">
+  <text x="10" y="20" font-size="13" font-weight="650">GPU 2대로 자른 MLP (Megatron-LM 그림 3a)</text>
+  <rect x="20" y="70" width="60" height="90" rx="4" fill="var(--wash)" stroke="var(--axis)"/><text x="50" y="120" font-size="14" text-anchor="middle">X</text>
+  <text x="50" y="180" font-size="11" text-anchor="middle" class="m">두 GPU 모두 보유</text>
+  <g><rect x="120" y="40" width="60" height="70" rx="4" fill="var(--s1)" opacity=".85"/><text x="150" y="80" font-size="13" text-anchor="middle" fill="#fff" style="fill:#fff">A₁</text>
+     <rect x="120" y="125" width="60" height="70" rx="4" fill="var(--s2)" opacity=".85"/><text x="150" y="165" font-size="13" text-anchor="middle" style="fill:#fff">A₂</text></g>
+  <text x="150" y="215" font-size="11" text-anchor="middle" class="m">A를 열로 자름</text>
+  <path d="M80 100 L118 75 M80 130 L118 160" stroke="var(--axis)" fill="none"/>
+  <g><rect x="230" y="40" width="110" height="70" rx="4" fill="none" stroke="var(--s1)" stroke-width="2"/><text x="285" y="80" font-size="12.5" text-anchor="middle">GeLU(X·A₁) = Y₁</text>
+     <rect x="230" y="125" width="110" height="70" rx="4" fill="none" stroke="var(--s2)" stroke-width="2"/><text x="285" y="165" font-size="12.5" text-anchor="middle">GeLU(X·A₂) = Y₂</text></g>
+  <path d="M180 75 L228 75 M180 160 L228 160" stroke="var(--axis)" fill="none"/>
+  <g><rect x="390" y="40" width="60" height="70" rx="4" fill="var(--s1)" opacity=".85"/><text x="420" y="80" font-size="13" text-anchor="middle" style="fill:#fff">B₁</text>
+     <rect x="390" y="125" width="60" height="70" rx="4" fill="var(--s2)" opacity=".85"/><text x="420" y="165" font-size="13" text-anchor="middle" style="fill:#fff">B₂</text></g>
+  <text x="420" y="215" font-size="11" text-anchor="middle" class="m">B를 행으로 자름</text>
+  <path d="M340 75 L388 75 M340 160 L388 160" stroke="var(--axis)" fill="none"/>
+  <g><rect x="500" y="40" width="80" height="70" rx="4" fill="none" stroke="var(--s1)" stroke-width="2"/><text x="540" y="80" font-size="13" text-anchor="middle">Z₁ = Y₁B₁</text>
+     <rect x="500" y="125" width="80" height="70" rx="4" fill="none" stroke="var(--s2)" stroke-width="2"/><text x="540" y="165" font-size="13" text-anchor="middle">Z₂ = Y₂B₂</text></g>
+  <path d="M450 75 L498 75 M450 160 L498 160" stroke="var(--axis)" fill="none"/>
+  <path d="M580 75 L640 112 M580 160 L640 122" stroke="var(--s8)" stroke-width="2" fill="none"/>
+  <rect x="640" y="95" width="110" height="44" rx="22" fill="none" stroke="var(--s8)" stroke-width="2"/><text x="695" y="122" font-size="13" text-anchor="middle" font-weight="650">all-reduce</text>
+  <path d="M750 117 L790 117" stroke="var(--axis)" fill="none"/><text x="812" y="122" font-size="14" text-anchor="middle">Z</text>
+  <text x="695" y="160" font-size="11" text-anchor="middle" class="m">순전파 MLP당 1번</text>
+</svg>
+<p>어텐션은 <strong>헤드 단위</strong>로 나눕니다. Q·K·V 투영을 헤드별로 열 방향으로 자르면 각 GPU가 자기 헤드의 어텐션을 독립적으로 계산하고, 출력 투영을 행 방향으로 잘라 다시 all-reduce 한 번으로 합칩니다. 그래서 Transformer 층 하나에 <strong>순전파 2번, 역전파 2번</strong>의 all-reduce가 생깁니다. Megatron-LM은 이 방법으로 8.3B GPT-2 모델을 512개 GPU에서 학습했습니다.</p>
+<p>ZeRO와 다른 점은 <strong>무엇을</strong> 주고받느냐입니다. ZeRO는 스텝마다 파라미터와 기울기를 주고받고, 계산과 겹치기 쉽습니다. 텐서 병렬은 <strong>층마다 활성</strong>을 주고받고, 그 결과가 나와야 다음 계산을 할 수 있어서 통신이 계산 경로 한가운데 놓입니다. 그래서 대역폭이 모자라면 바로 느려집니다.</p>
+
+<div class="demo">
+  <h4>데모 2 · 텐서 병렬을 노드 밖으로 넓히면</h4>
+  <p class="cap">Llama 3 405B 층 하나(파라미터 약 3.19B, 은닉 차원 16,384)에 8,192토큰짜리 시퀀스 하나를 순전파할 때, GPU 한 대의 계산 시간과 all-reduce 2번의 통신 시간을 대략 계산합니다. 계산 속도는 GPU당 400 TFLOP/s(Llama 3가 실제로 낸 수준), all-reduce는 링 방식으로 GPU당 2(TP−1)/TP × 메시지 크기를 보낸다고 둡니다. 어텐션 점수 계산과 계산·통신 겹치기는 무시한 어림값입니다.</p>
+  <div class="ctrls">
+    <div><div class="mini" style="margin:0 0 4px">TP 크기</div><div class="seg" id="d2tp"><button data-v="1" aria-pressed="false">1</button><button data-v="2" aria-pressed="false">2</button><button data-v="4" aria-pressed="false">4</button><button data-v="8" aria-pressed="true">8</button><button data-v="16" aria-pressed="false">16</button></div></div>
+    <div><div class="mini" style="margin:0 0 4px">TP 그룹을 잇는 연결</div><div class="seg" id="d2ln"><button data-v="nv" aria-pressed="true">서버 안 NVLink</button><button data-v="ib" aria-pressed="false">서버 사이 400Gb/s</button></div></div>
+  </div>
+  <canvas id="d2cv" height="120"></canvas>
+  <div class="legend"><span><i style="background:var(--s1)"></i>계산</span><span><i style="background:var(--s8)"></i>all-reduce (기다림)</span></div>
+  <div class="readout" id="d2out"></div>
+</div>
+<p>NVLink에서 TP 8은 통신이 전체의 10% 남짓입니다. 같은 TP 8을 서버 사이 400Gb/s(GPU당 50GB/s) 연결로 묶으면 통신이 계산보다 길어집니다. TP 16은 서버 하나(GPU 8대)를 넘어가므로 NVLink를 고를 수 없습니다. 이것이 <strong>텐서 병렬은 보통 한 노드(NVLink로 묶인 GPU 8대) 안에서만 쓴다</strong>는 규칙의 이유입니다. 모델을 더 잘라야 하면 다른 축을 써야 합니다.</p>
+
+<!-- ───────── 5 ───────── -->
+<h2 id="s5">5. 레이아웃으로 일반화하기 (Mesh-TensorFlow)</h2>
+<p>Mesh-TensorFlow는 새로운 병렬화를 하나 더 만든 게 아니라, <strong>병렬화를 기술하는 언어</strong>를 만들었습니다. 장치들을 2차원(또는 n차원) 격자, 즉 메시로 보고, 텐서의 각 차원에 이름을 붙인 뒤 "batch 차원은 메시의 행 축에, hidden 차원은 열 축에 나눈다" 같은 <strong>레이아웃</strong>만 적으면 필요한 통신은 시스템이 알아서 넣습니다. batch를 나누면 데이터 병렬, hidden을 나누면 텐서 병렬, 둘 다 나누면 둘을 섞은 것이 됩니다. 논문은 이 방법으로 최대 5B 파라미터 Transformer를 TPU 512코어에서 학습했습니다.</p>
+<div class="demo">
+  <h4>데모 3 · 같은 텐서, 다른 레이아웃</h4>
+  <p class="cap">활성 텐서 X[batch=8, hidden=8]을 GPU 8대로 된 2 × 4 메시에 놓습니다. 레이아웃을 바꾸면 각 칸을 어느 GPU가 들고 있는지(왼쪽)와 GPU 하나가 드는 조각의 모양(오른쪽)이 바뀝니다.</p>
+  <div class="ctrls"><div class="seg" id="d3ly">
+    <button data-v="rep" aria-pressed="false">나누지 않음</button>
+    <button data-v="dp" aria-pressed="false">batch → 메시 전체</button>
+    <button data-v="tp" aria-pressed="false">hidden → 메시 전체</button>
+    <button data-v="2d" aria-pressed="true">batch → 행, hidden → 열</button>
+  </div></div>
+  <canvas id="d3cv" height="250"></canvas>
+  <div class="info" id="d3out"></div>
+</div>
+<p>이 생각은 이후 Google의 GSPMD, JAX의 <code>PartitionSpec</code>, PyTorch의 <code>DeviceMesh</code>/<code>DTensor</code>로 이어졌습니다. 9절에서 볼 Llama 3의 4D 병렬화도 결국 <strong>[TP, CP, PP, DP] 네 축짜리 장치 메시</strong>에 무엇을 어느 축으로 나눌지 정한 레이아웃입니다.</p>
+
+<!-- ───────── 6 ───────── -->
+<h2 id="s6">6. 파이프라인 병렬 (GPipe 계열): 왜 "최후 수단"인가 <span class="tag ax-pp">PP</span></h2>
+<p>파이프라인 병렬은 모델을 <strong>층 묶음(스테이지)</strong> 단위로 잘라 GPU마다 하나씩 싣고, 미니배치를 마이크로배치로 쪼개 흘려보냅니다. 스테이지 사이에는 경계의 활성만 점대점으로 넘기면 되니 통신량이 적고, 그래서 <strong>느린 노드 사이 연결</strong>에도 둘 수 있다는 게 장점입니다. 원리와 타임라인은 <a href="https://dev-jonghoonpark.github.io/how-gpipe-works/">How GPipe Works</a>에서 직접 돌려 볼 수 있습니다.</p>
+<p>그런데 파이프라인만으로 스케일하면 대가가 커집니다.</p>
+<ul>
+  <li><strong>버블</strong>: 파이프라인을 채우고 비우는 동안 일부 GPU가 놉니다. 스테이지 p개, 마이크로배치 m개면 유휴 비율이 \((p-1)/(m+p-1)\)입니다.</li>
+  <li><strong>배치 크기 제약</strong>: 버블을 줄이려면 m을 p보다 훨씬 크게 잡아야 하는데, 그러면 전역 배치가 커집니다. 배치는 학습 안정성 때문에 마음대로 늘릴 수 없습니다.</li>
+  <li><strong>불균형</strong>: 가장 느린 스테이지가 전체 속도를 정합니다. 임베딩·출력층이 붙은 첫·마지막 스테이지는 무겁고, 메모리도 앞 스테이지일수록 마이크로배치 활성을 오래 들고 있습니다.</li>
+  <li><strong>구현 복잡도</strong>: 스케줄(1F1B, interleaved), 스테이지 간 비동기 통신, 메모리 해제 시점을 직접 관리해야 합니다.</li>
+</ul>
+<div class="demo">
+  <h4>데모 4 · 버블과 interleaved 스케줄</h4>
+  <p class="cap">스테이지 수 p, 마이크로배치 수 m, GPU당 가상 스테이지 수 v(Megatron의 interleaved 1F1B, v = 1이면 일반 1F1B)를 바꿔 유휴 비율 \((p-1)/(v\,m+p-1)\)을 봅니다. 아래 막대는 m을 1부터 64까지 바꿨을 때의 유휴 비율입니다.</p>
+  <div class="ctrls">
+    <div class="ctrl"><label>스테이지 수 p <b id="d4pv"></b></label><input type="range" id="d4p" min="1" max="32" step="1" value="16"></div>
+    <div class="ctrl"><label>마이크로배치 수 m <b id="d4mv"></b></label><input type="range" id="d4m" min="1" max="64" step="1" value="16"></div>
+    <div class="ctrl"><label>가상 스테이지 v <b id="d4vv"></b></label><input type="range" id="d4v" min="1" max="4" step="1" value="1"></div>
+  </div>
+  <canvas id="d4cv" height="150"></canvas>
+  <div class="readout" id="d4out"></div>
+</div>
+<p>그래서 지금의 정리는 이렇습니다. <strong>데이터 병렬(ZeRO/FSDP) + 텐서 병렬(Megatron식)이 주력</strong>이고, 그래도 모델이 장치에 안 들어갈 때만 파이프라인을 노드 사이에 얇게 섞습니다. "순수" 파이프라인이라는 말은 파이프라인 하나만으로 GPU 수를 늘리는 방식을 가리킵니다.</p>
+
+<!-- ───────── 7 ───────── -->
+<h2 id="s7">7. 컨텍스트 병렬: 긴 시퀀스 자르기 <span class="tag ax-cp">CP</span></h2>
+<p>문맥이 128K 토큰쯤 되면 모델은 들어가도 <strong>시퀀스 하나의 활성</strong>이 GPU 하나에 안 들어갑니다. 컨텍스트 병렬(시퀀스 병렬이라고도 합니다)은 시퀀스 길이 방향으로 토큰을 잘라 GPU마다 나눕니다. MLP나 LayerNorm은 토큰마다 독립이라 그냥 나눠도 되지만, 어텐션은 각 쿼리가 앞쪽 모든 토큰의 K·V를 봐야 해서 통신이 필요합니다. 방법은 둘입니다.</p>
+<ul>
+  <li><strong>Ring Attention</strong> (Liu et al., 2023): K·V 조각을 GPU 고리를 따라 한 칸씩 돌리며, 받는 동안 계산을 겹칩니다.</li>
+  <li><strong>All-gather</strong>: K·V를 한 번에 모두 모은 뒤 자기 쿼리 조각만 계산합니다. Llama 3가 고른 방식입니다. GQA 때문에 K·V가 Q보다 훨씬 작고(405B는 쿼리 헤드 128개에 K·V 헤드 8개), 문서 경계 마스크 같은 다양한 마스크를 다루기 쉽다는 이유였습니다.</li>
+</ul>
+<p>또 하나의 문제는 <strong>인과 마스크</strong>입니다. 앞 토큰은 볼 것이 적고 뒤 토큰은 볼 것이 많아서, 시퀀스를 순서대로 자르면 마지막 GPU가 일을 몰아서 합니다. Llama 3는 시퀀스를 2 × CP개 조각으로 자르고 GPU i에게 i번째와 (2·CP−1−i)번째 조각을 함께 줘서 균형을 맞췄습니다.</p>
+<div class="demo">
+  <h4>데모 5 · 인과 어텐션의 일을 고르게 나누기</h4>
+  <p class="cap">16 × 16 칸이 쿼리(행) × 키(열) 블록이고, 대각선 아래(색칠된 칸)만 계산합니다. 행의 색이 그 쿼리를 맡은 GPU입니다. 막대는 GPU별 계산량(칸 수)입니다.</p>
+  <div class="ctrls">
+    <div><div class="mini" style="margin:0 0 4px">CP 크기</div><div class="seg" id="d5cp"><button data-v="1" aria-pressed="false">1</button><button data-v="2" aria-pressed="false">2</button><button data-v="4" aria-pressed="true">4</button><button data-v="8" aria-pressed="false">8</button></div></div>
+    <div><div class="mini" style="margin:0 0 4px">자르는 방법</div><div class="seg" id="d5md"><button data-v="seq" aria-pressed="true">순서대로 CP조각</button><button data-v="fold" aria-pressed="false">2·CP조각, 앞뒤 짝짓기</button></div></div>
+  </div>
+  <canvas id="d5cv" height="260"></canvas>
+  <div class="readout" id="d5out"></div>
+</div>
+
+<!-- ───────── 8 ───────── -->
+<h2 id="s8">8. 전문가 병렬: MoE의 전문가 나누기 <span class="tag ax-ep">EP</span></h2>
+<p>MoE(Mixture of Experts) 모델은 MLP 자리에 전문가 MLP를 여러 개 두고, 라우터가 토큰마다 몇 개만 골라 보냅니다. 전문가 병렬은 <strong>전문가들을 GPU에 나눠 배치</strong>하고, 토큰을 자기 전문가가 있는 GPU로 보냈다가(all-to-all) 결과를 다시 돌려받는(all-to-all) 방식입니다. GShard(Lepikhin et al., 2020)가 대규모로 쓴 뒤 표준이 되었습니다.</p>
+<svg class="fig" viewBox="0 0 840 200" role="img" aria-label="전문가 병렬: GPU마다 전문가 2개, 토큰이 all-to-all로 해당 전문가의 GPU로 이동">
+  <text x="10" y="20" font-size="13" font-weight="650">GPU 4대 × 전문가 2개씩 = 전문가 8개</text>
+  <g id="epfig"></g>
+</svg>
+<p>최근 대형 모델이 MoE로 많이 가면서 이 축의 비중이 커졌습니다. 예를 들어 DeepSeek-V3는 H800 2,048개에서 <strong>파이프라인 16 × 전문가 64(노드 8개에 걸침) × ZeRO-1 데이터 병렬</strong>로 학습했고 텐서 병렬은 쓰지 않았습니다. 반면 Llama 3 405B는 전문가가 없는 <strong>밀집(dense) 모델</strong>이라 전문가 병렬이 없습니다. 그래서 Llama 3는 "4D"입니다.</p>
+
+<!-- ───────── 9 ───────── -->
+<h2 id="s9">9. Llama 3 405B의 4D 병렬화</h2>
+<p>Meta의 「The Llama 3 Herd of Models」(2024) 3.3.2절은 405B 모델을 최대 16,384개 H100(80GB)에서 학습한 구성을 밝힙니다. 서버마다 GPU 8대가 NVLink로 묶여 있고, 서버 사이는 GPU당 400Gb/s RoCE 네트워크입니다. 여기에 네 가지 병렬화를 겹쳤습니다.</p>
+<div class="tw"><table>
+  <tr><th>축</th><th>크기</th><th>무엇을 나누나</th><th>어디에</th></tr>
+  <tr><td><span class="tag ax-tp">TP</span> 텐서</td><td>8</td><td>층 안의 행렬. 405B의 어텐션 헤드 128개 → GPU당 16개, K·V 헤드 8개 → GPU당 1개</td><td>서버 하나(NVLink) 안</td></tr>
+  <tr><td><span class="tag ax-cp">CP</span> 컨텍스트</td><td>1 또는 16</td><td>시퀀스. 8K 문맥 사전학습에서는 1, 128K 장문맥 학습에서 16</td><td>서버 사이</td></tr>
+  <tr><td><span class="tag ax-pp">PP</span> 파이프라인</td><td>16</td><td>126개 층을 16 스테이지로. interleaved 스케줄</td><td>서버 사이</td></tr>
+  <tr><td><span class="tag ax-dp">DP</span> 데이터 (FSDP)</td><td>나머지 (8 ~ 128)</td><td>배치. 옵티마이저 상태·기울기를 샤딩</td><td>가장 바깥</td></tr>
+</table></div>
+
+<h3>한눈에 보기 · GPU 한 대에서 16,384대까지</h3>
+<p>8K 문맥, 16,384대 구성(표 4 둘째 행)을 안쪽부터 쌓아 올리면 이렇습니다.</p>
+<svg class="fig" viewBox="0 0 840 250" role="img" aria-label="Llama 3 405B 4D 병렬 계층: GPU, 서버(TP 8), 복제본(PP 16), 클러스터(DP 128)">
+  <g font-size="12">
+    <rect x="10" y="60" width="120" height="120" rx="10" fill="none" stroke="var(--s1)" stroke-width="2"/>
+    <rect x="45" y="85" width="50" height="40" rx="6" fill="var(--s1)" opacity=".85"/>
+    <text x="70" y="110" text-anchor="middle" font-weight="700" style="fill:#fff">H100</text>
+    <text x="70" y="150" text-anchor="middle" font-weight="650">GPU 1대</text>
+    <text x="70" y="167" text-anchor="middle" class="m">80GB</text>
+    <text x="165" y="115" text-anchor="middle" font-weight="700" fill="var(--s1)" style="fill:var(--s1)">× 8</text>
+    <text x="165" y="133" text-anchor="middle" class="m">TP</text>
+    <rect x="200" y="60" width="160" height="120" rx="10" fill="none" stroke="var(--s1)" stroke-width="2"/>
+    <g fill="var(--s1)" opacity=".85"><rect x="214" y="78" width="28" height="22" rx="3"/><rect x="248" y="78" width="28" height="22" rx="3"/><rect x="282" y="78" width="28" height="22" rx="3"/><rect x="316" y="78" width="28" height="22" rx="3"/><rect x="214" y="106" width="28" height="22" rx="3"/><rect x="248" y="106" width="28" height="22" rx="3"/><rect x="282" y="106" width="28" height="22" rx="3"/><rect x="316" y="106" width="28" height="22" rx="3"/></g>
+    <text x="280" y="150" text-anchor="middle" font-weight="650">서버 1대 = TP 그룹</text>
+    <text x="280" y="167" text-anchor="middle" class="m">NVLink · 층마다 all-reduce</text>
+    <text x="395" y="115" text-anchor="middle" font-weight="700" style="fill:var(--s2)">× 16</text>
+    <text x="395" y="133" text-anchor="middle" class="m">PP</text>
+    <rect x="430" y="40" width="190" height="160" rx="10" fill="none" stroke="var(--s2)" stroke-width="2"/>
+    <g fill="var(--s2)"><rect x="442" y="64" width="9" height="40" rx="2" opacity=".3"/><rect x="452.5" y="64" width="9" height="40" rx="2" opacity=".35"/><rect x="463" y="64" width="9" height="40" rx="2" opacity=".4"/><rect x="473.5" y="64" width="9" height="40" rx="2" opacity=".45"/><rect x="484" y="64" width="9" height="40" rx="2" opacity=".5"/><rect x="494.5" y="64" width="9" height="40" rx="2" opacity=".55"/><rect x="505" y="64" width="9" height="40" rx="2" opacity=".6"/><rect x="515.5" y="64" width="9" height="40" rx="2" opacity=".65"/><rect x="526" y="64" width="9" height="40" rx="2" opacity=".7"/><rect x="536.5" y="64" width="9" height="40" rx="2" opacity=".75"/><rect x="547" y="64" width="9" height="40" rx="2" opacity=".8"/><rect x="557.5" y="64" width="9" height="40" rx="2" opacity=".85"/><rect x="568" y="64" width="9" height="40" rx="2" opacity=".9"/><rect x="578.5" y="64" width="9" height="40" rx="2" opacity=".93"/><rect x="589" y="64" width="9" height="40" rx="2" opacity=".96"/><rect x="599.5" y="64" width="9" height="40" rx="2" opacity="1"/></g>
+    <text x="525" y="125" text-anchor="middle" class="m">층 1 ─────────▶ 층 126</text>
+    <text x="525" y="155" text-anchor="middle" font-weight="650">모델 복제본 1개 = 서버 16대</text>
+    <text x="525" y="172" text-anchor="middle" class="m">GPU 128대 · 스테이지 사이 점대점</text>
+    <text x="655" y="115" text-anchor="middle" font-weight="700" style="fill:var(--s3)">× 128</text>
+    <text x="655" y="133" text-anchor="middle" class="m">DP</text>
+    <rect x="690" y="20" width="140" height="200" rx="10" fill="none" stroke="var(--s3)" stroke-width="2"/>
+    <g fill="var(--s3)" opacity=".75"><rect x="704" y="36" width="112" height="6" rx="2"/><rect x="704" y="46" width="112" height="6" rx="2"/><rect x="704" y="56" width="112" height="6" rx="2"/><rect x="704" y="66" width="112" height="6" rx="2"/><rect x="704" y="76" width="112" height="6" rx="2"/><rect x="704" y="86" width="112" height="6" rx="2"/><rect x="704" y="96" width="112" height="6" rx="2"/><rect x="704" y="106" width="112" height="6" rx="2"/><rect x="704" y="116" width="112" height="6" rx="2"/><rect x="704" y="126" width="112" height="6" rx="2"/></g>
+    <text x="760" y="152" text-anchor="middle" class="m">⋮</text>
+    <text x="760" y="180" text-anchor="middle" font-weight="650">16,384 GPU</text>
+    <text x="760" y="197" text-anchor="middle" class="m">FSDP · 스텝마다</text>
+    <text x="760" y="211" text-anchor="middle" class="m">기울기 reduce-scatter</text>
+  </g>
+  <text x="420" y="243" text-anchor="middle" font-size="12" class="m">안쪽으로 갈수록 통신이 잦고 무거움 ◀──────▶ 바깥으로 갈수록 드물고 계산과 겹치기 쉬움</text>
+</svg>
+<p>128K 장문맥 단계에서는 서버와 복제본 사이에 CP 16 축이 끼어듭니다(GPU 8 × CP 16 × PP 16 = 복제본 하나가 2,048대). 그만큼 DP는 8로 줄어듭니다.</p>
+
+<h3>그림 1 · 16대로 줄여 본 4D 배치 (Llama 3 그림 5)</h3>
+<p>논문 그림 5는 축마다 크기 2인 GPU 16대의 예로 그룹을 나누는 순서를 보여 줍니다. GPU 번호(rank)를 <strong>[TP, CP, PP, DP] 순서</strong>로, 즉 TP가 가장 빨리 바뀌게 매깁니다: rank = tp + 2·cp + 4·pp + 8·dp. 그래서 번호가 붙어 있는 GPU끼리(같은 서버 안) TP 그룹이 되고, 가장 멀리 떨어진 GPU끼리 DP 그룹이 됩니다.</p>
+<div class="demo">
+  <h4>데모 6 · GPU를 눌러 그룹 보기</h4>
+  <p class="cap">위 버튼으로 축을 고르면 그 축의 그룹들이 같은 색으로 묶입니다(같은 색 = 같은 그룹 = 그 축의 통신을 함께 하는 GPU). GPU를 누르면 그 GPU가 무엇을 맡는지 보여 줍니다. 점선 상자는 서버 하나(이 예에서는 GPU 4대)입니다.</p>
+  <div class="ctrls"><div class="seg" id="d6ax"><button data-v="tp" aria-pressed="true">TP 그룹</button><button data-v="cp" aria-pressed="false">CP 그룹</button><button data-v="pp" aria-pressed="false">PP 그룹</button><button data-v="dp" aria-pressed="false">DP 그룹</button></div></div>
+  <svg class="fig" id="d6svg" viewBox="0 0 840 250" role="img" aria-label="GPU 16대의 4D 병렬 그룹"></svg>
+  <div class="info" id="d6out"></div>
+</div>
+<p>TP 그룹은 서로 붙은 두 GPU, DP 그룹은 8칸 떨어진 두 GPU입니다. 축의 순서가 곧 <strong>"얼마나 가까운 GPU끼리 묶느냐"</strong>이고, 논문은 이 순서를 네트워크 통신에 맞춰 골랐다고 적습니다. 가장 안쪽 축이 가장 넓은 대역폭과 가장 짧은 지연을 요구하니 같은 서버 안에 두는 겁니다.</p>
+
+<h3>그림 2 · 실제 규모: 16,384개 GPU의 배치 (Llama 3 표 4)</h3>
+<div class="demo">
+  <h4>데모 7 · 표 4의 세 구성</h4>
+  <p class="cap">작은 칸 하나가 서버(노드) 하나 = GPU 8대 = TP 그룹 하나입니다. 굵은 테두리 하나가 <strong>모델 복제본 하나</strong>(PP 16 스테이지 × CP)이고, 칸의 진하기는 파이프라인 스테이지 번호(왼쪽 0 → 오른쪽 15)입니다. 복제본이 몇 개인지가 DP 크기입니다.</p>
+  <div class="ctrls"><div class="seg" id="d7row"><button data-v="0" aria-pressed="true">8,192 GPU · 8K 문맥</button><button data-v="1" aria-pressed="false">16,384 GPU · 8K 문맥</button><button data-v="2" aria-pressed="false">16,384 GPU · 128K 문맥</button></div></div>
+  <canvas id="d7cv" height="460"></canvas>
+  <div class="readout" id="d7out"></div>
+</div>
+<div class="tw"><table>
+  <tr><th class="num">GPU</th><th class="num">TP</th><th class="num">CP</th><th class="num">PP</th><th class="num">DP</th><th class="num">시퀀스 길이</th><th class="num">DP당 배치</th><th class="num">배치당 토큰</th><th class="num">TFLOP/s/GPU</th><th class="num">BF16 MFU</th></tr>
+  <tr><td class="num">8,192</td><td class="num">8</td><td class="num">1</td><td class="num">16</td><td class="num">64</td><td class="num">8,192</td><td class="num">32</td><td class="num">16M</td><td class="num">430</td><td class="num">43%</td></tr>
+  <tr><td class="num">16,384</td><td class="num">8</td><td class="num">1</td><td class="num">16</td><td class="num">128</td><td class="num">8,192</td><td class="num">16</td><td class="num">16M</td><td class="num">400</td><td class="num">41%</td></tr>
+  <tr><td class="num">16,384</td><td class="num">8</td><td class="num">16</td><td class="num">16</td><td class="num">8</td><td class="num">131,072</td><td class="num">16</td><td class="num">16M</td><td class="num">380</td><td class="num">38%</td></tr>
+</table></div>
+<p>표를 읽는 요령은 <strong>GPU 수 = TP × CP × PP × DP</strong>와 <strong>배치당 토큰 = 시퀀스 길이 × DP당 배치 × DP</strong> 두 식입니다. 세 행 모두 배치당 약 1,600만 토큰으로 같습니다. 8,192대에서 16,384대로 늘릴 때는 TP·PP는 그대로 두고 DP만 64 → 128로 늘렸고, 대신 DP당 배치가 절반이 됩니다. 문맥을 128K로 늘릴 때는 CP 16을 새로 넣고 그만큼 DP를 8로 줄였습니다. 전역 배치를 지키면서 축 사이에서 GPU를 주고받는 겁니다. GPU를 늘릴수록 GPU당 성능(MFU)이 조금씩 떨어지는 것도 보입니다.</p>
+
+<h3>Llama 3가 덧붙인 세부 조정</h3>
+<ul>
+  <li><strong>파이프라인 균형</strong>: 126층을 16 스테이지로 나누면 스테이지당 8층이 안 맞습니다. 임베딩이 붙은 첫 스테이지와 출력층이 붙은 마지막 스테이지에서 Transformer 층을 하나씩 빼서(7 + 8 × 14 + 7 = 126) 무게를 맞췄습니다.</li>
+  <li><strong>파이프라인 스케줄</strong>: interleaved 스케줄을 쓰고, 마이크로배치 수를 자유롭게 정할 수 있게 고쳤으며, 스테이지 사이 통신을 비동기로 바꾸고, 다 쓴 텐서를 일찍 해제해 메모리를 줄였습니다.</li>
+  <li><strong>FSDP</strong>: 옵티마이저 상태와 기울기는 샤딩하지만, 파라미터는 순전파 뒤 다시 흩지 않고 역전파까지 들고 있어 all-gather 한 번을 아낍니다.</li>
+  <li><strong>컨텍스트 병렬</strong>: 7절의 all-gather 방식과 2·CP 조각 짝짓기를 씁니다.</li>
+</ul>
+<p class="note">이 규모의 학습은 계산만큼 고장과의 싸움이기도 합니다. 논문은 사전학습 중 54일 동안 작업 중단이 466번(예상치 못한 중단 419번) 있었고, 예상치 못한 중단의 약 78%가 GPU·HBM 같은 하드웨어 문제로 확인되었거나 의심된다고 적습니다. 그런데도 유효 학습 시간을 90% 넘게 유지했습니다.</p>
+
+<!-- ───────── 10 ───────── -->
+<h2 id="s10">10. 정리: 축을 고르는 순서</h2>
+<p>어느 축을 몇으로 나눌지는 모델 크기, 문맥 길이, 클러스터 네트워크 구조에 따라 그때그때 정합니다. 다만 결정 순서는 대체로 같습니다.</p>
+<div class="tw"><table>
+  <tr><th>상황</th><th>더하는 축</th><th>배치 위치</th><th>통신</th></tr>
+  <tr><td>모델이 GPU 한 대에 들어간다</td><td><span class="tag ax-dp">DP</span> 데이터 병렬</td><td>가장 바깥 (GPU 수를 늘릴 때 주로 이 축)</td><td>스텝마다 기울기 all-reduce</td></tr>
+  <tr><td>상태(가중치·기울기·옵티마이저)가 안 들어간다</td><td><span class="tag ax-dp">DP</span> → ZeRO / FSDP</td><td>가장 바깥</td><td>reduce-scatter + all-gather (계산과 겹치기 쉬움)</td></tr>
+  <tr><td>층 하나의 계산·활성이 너무 크다</td><td><span class="tag ax-tp">TP</span> 텐서 병렬</td><td>한 노드 안 (보통 ≤ 8)</td><td>층마다 활성 all-reduce</td></tr>
+  <tr><td>그래도 모델이 안 들어간다</td><td><span class="tag ax-pp">PP</span> 파이프라인</td><td>노드 사이에 얇게</td><td>스테이지 경계 점대점</td></tr>
+  <tr><td>문맥이 아주 길다</td><td><span class="tag ax-cp">CP</span> 컨텍스트 병렬</td><td>TP 바깥</td><td>K·V all-gather 또는 링</td></tr>
+  <tr><td>MoE 모델이다</td><td><span class="tag ax-ep">EP</span> 전문가 병렬</td><td>모델·클러스터에 따라</td><td>토큰 all-to-all</td></tr>
+</table></div>
+<p>같은 시리즈의 <a href="https://dev-jonghoonpark.github.io/how-gpipe-works/">How GPipe Works</a>는 파이프라인의 버블과 재계산을, <a href="https://dev-jonghoonpark.github.io/how-adam-works/">How Adam Works</a>는 학습 메모리에서 옵티마이저 상태가 차지하는 몫을, <a href="https://dev-jonghoonpark.github.io/how-scaling-laws-work/">How Scaling Laws Work</a>는 애초에 왜 모델을 이만큼 키우는지를 다룹니다.</p>
+
+<!-- ───────── 11 ───────── -->
+<h2 id="s11">11. 확인 퀴즈</h2>
+<div id="quiz"></div>
+<p class="quiz-score" id="quizScore"></p>
+
+<footer>
+<p><strong>참고 문헌</strong></p>
+<ul class="refs">
+<li>Llama Team, AI @ Meta (2024), <em>The Llama 3 Herd of Models</em> — <a href="https://arxiv.org/abs/2407.21783" target="_blank" rel="noopener">arXiv:2407.21783</a> (3.3절 인프라, 표 4, 그림 5)</li>
+<li>Huang et al. (2019), <em>GPipe: Efficient Training of Giant Neural Networks using Pipeline Parallelism</em>, NeurIPS 2019 — <a href="https://arxiv.org/abs/1811.06965" target="_blank" rel="noopener">arXiv:1811.06965</a></li>
+<li>Shoeybi et al. (2019), <em>Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism</em> — <a href="https://arxiv.org/abs/1909.08053" target="_blank" rel="noopener">arXiv:1909.08053</a></li>
+<li>Narayanan et al. (2021), <em>Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM</em>, SC21 — <a href="https://arxiv.org/abs/2104.04473" target="_blank" rel="noopener">arXiv:2104.04473</a></li>
+<li>Shazeer et al. (2018), <em>Mesh-TensorFlow: Deep Learning for Supercomputers</em>, NeurIPS 2018 — <a href="https://arxiv.org/abs/1811.02084" target="_blank" rel="noopener">arXiv:1811.02084</a></li>
+<li>Rajbhandari, Rasley, Ruwase &amp; He (2020), <em>ZeRO: Memory Optimizations Toward Training Trillion Parameter Models</em>, SC20 — <a href="https://arxiv.org/abs/1910.02054" target="_blank" rel="noopener">arXiv:1910.02054</a></li>
+<li>Zhao et al. (2023), <em>PyTorch FSDP: Experiences on Scaling Fully Sharded Data Parallel</em>, VLDB 2023 — <a href="https://arxiv.org/abs/2304.11277" target="_blank" rel="noopener">arXiv:2304.11277</a></li>
+<li>Liu, Zaharia &amp; Abbeel (2023), <em>Ring Attention with Blockwise Transformers for Near-Infinite Context</em> — <a href="https://arxiv.org/abs/2310.01889" target="_blank" rel="noopener">arXiv:2310.01889</a></li>
+<li>Lepikhin et al. (2020), <em>GShard: Scaling Giant Models with Conditional Computation and Automatic Sharding</em> — <a href="https://arxiv.org/abs/2006.16668" target="_blank" rel="noopener">arXiv:2006.16668</a></li>
+<li>DeepSeek-AI (2024), <em>DeepSeek-V3 Technical Report</em> — <a href="https://arxiv.org/abs/2412.19437" target="_blank" rel="noopener">arXiv:2412.19437</a></li>
+</ul>
+<p style="margin-top:18px"><a href="https://github.com/dev-jonghoonpark/how-ai-works">how-ai-works</a> 시리즈 · 모든 계산은 브라우저에서 실시간으로 이루어집니다.</p>
+</footer>
+</div>
+<script>
+var $=function(s){return document.querySelector(s);};
+var cssCache={};
+function css(v){return v in cssCache?cssCache[v]:(cssCache[v]=getComputedStyle(document.documentElement).getPropertyValue(v).trim());}
+/* 모바일에서 캔버스 버퍼를 매번 새로 잡으면 메모리가 쌓여 탭이 죽는다.
+   크기가 같으면 기존 버퍼를 재사용하고, dpr은 2로 제한한다.
+   cv.height에 대입하면 height 속성도 바뀌므로 논리 높이는 data-h에 따로 둔다. */
+function setup(cv){
+  if(!cv.dataset.h)cv.dataset.h=cv.getAttribute('height');
+  var dpr=Math.min(2,window.devicePixelRatio||1), w=cv.clientWidth, h=+cv.dataset.h;
+  var bw=Math.round(w*dpr), bh=Math.round(h*dpr);
+  if(cv.width!==bw||cv.height!==bh){cv.width=bw;cv.height=bh;cv.style.height=h+'px';}
+  var c=cv.getContext('2d'); c.setTransform(dpr,0,0,dpr,0,0);
+  c.clearRect(0,0,w,h);
+  return {c:c,w:w,h:h};
+}
+function hexA(hex,a){var n=parseInt(hex.slice(1),16);return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')';}
+function fmt(x,d){return (+x).toFixed(d==null?2:d);}
+function fmtInt(n){return Math.round(n).toLocaleString('en-US');}
+function pct(x,d){return (x*100).toFixed(d==null?1:d)+'%';}
+function segInit(id,fn){var el=$(id);el.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;
+  el.querySelectorAll('button').forEach(function(x){x.setAttribute('aria-pressed',x===b?'true':'false');});fn(b.dataset.v);});}
+function segVal(id){var b=$(id).querySelector('button[aria-pressed=true]');return b?b.dataset.v:null;}
+function segSet(id,v){$(id).querySelectorAll('button').forEach(function(x){x.setAttribute('aria-pressed',x.dataset.v===String(v)?'true':'false');});}
+function font(c,sz,w){c.font=(w||'')+' '+sz+'px system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif';}
+function gb(bytes){var g=bytes/1e9;return g>=1000?fmt(g/1000,2)+' TB':g>=100?fmt(g,0)+' GB':g>=10?fmt(g,1)+' GB':fmt(g,2)+' GB';}
+function big(n){return n>=1e12?fmt(n/1e12,2)+'T':n>=1e9?fmt(n/1e9,n>=1e11?0:1)+'B':fmt(n/1e6,0)+'M';}
+/* 장치 8대를 구분하는 색 */
+function pal(i){var k=['--s1','--s2','--s3','--s4','--s8','--warn'];if(i<6)return css(k[i]);return i===6?'#0e9aa7':'#c0559b';}
+var HBM=80e9;
+
+/* ══════ 데모 1 · ZeRO 메모리 ══════ */
+function d1P(){return Math.pow(10,9+3*(+$('#d1P').value)/100);}
+function d1N(){return Math.pow(2,+$('#d1N').value);}
+function d1Slider(P){return (Math.log10(P)-9)/3*100;}
+/* ZeRO 논문 식: (가중치, 기울기, 옵티마이저) 바이트. K = 12 */
+function zeroParts(P,N,s){return [s>=3?2*P/N:2*P, s>=2?2*P/N:2*P, s>=1?12*P/N:12*P];}
+var D1PRE=[{l:'논문 예 (7.5B, N=64)',P:7.5e9,N:6},{l:'70B, N=64',P:70e9,N:6},{l:'405B, N=64',P:405e9,N:6},{l:'405B, N=512',P:405e9,N:9}];
+D1PRE.forEach(function(p){var b=document.createElement('button');b.type='button';b.textContent=p.l;
+  b.onclick=function(){$('#d1P').value=d1Slider(p.P);$('#d1N').value=p.N;drawD1();};$('#d1pre').appendChild(b);});
+function drawD1(){
+  var P=d1P(),N=d1N(),st=+segVal('#d1st');
+  $('#d1Pv').textContent=big(P);$('#d1Nv').textContent=fmtInt(N);
+  var g=setup($('#d1cv')),c=g.c,L=104,R=g.w-14,X=160e9,names=['DP','ZeRO-1','ZeRO-2','ZeRO-3'];
+  var cols=[css('--s1'),css('--s3'),css('--s4')];
+  function xo(v){return L+(R-L)*Math.min(v,X)/X;}
+  for(var s=0;s<4;s++){
+    var y=14+s*38,parts=zeroParts(P,N,s),x=L,tot=parts[0]+parts[1]+parts[2];
+    font(c,12.5,s===st?'700':'500');c.fillStyle=s===st?css('--text-primary'):css('--text-secondary');c.textAlign='right';c.textBaseline='middle';
+    c.fillText(names[s],L-10,y+12);
+    for(var k=0,acc=0;k<3;k++){acc+=parts[k];var x2=xo(acc);
+      c.fillStyle=hexA(cols[k],s===st?0.95:0.55);c.fillRect(x,y,Math.max(0,x2-x),24);x=x2;}
+    font(c,12,'650');c.textAlign='left';c.fillStyle=css('--text-primary');
+    if(tot>X){c.fillStyle=css('--surface-1');c.beginPath();c.moveTo(R-14,y-2);c.lineTo(R-6,y+6);c.lineTo(R-12,y+12);c.lineTo(R-6,y+18);c.lineTo(R-12,y+26);c.lineTo(R+2,y+26);c.lineTo(R+2,y-2);c.fill();
+      c.textAlign='right';c.fillStyle=css('--text-primary');c.fillText(gb(tot)+' ≫',R-20,y+12);}
+    else c.fillText(gb(tot),xo(tot)+6,y+12);
+  }
+  var x80=xo(HBM);c.strokeStyle=css('--s8');c.setLineDash([4,4]);c.beginPath();c.moveTo(x80,6);c.lineTo(x80,164);c.stroke();c.setLineDash([]);
+  font(c,11.5,'600');c.fillStyle=css('--s8');c.textAlign='center';c.fillText('H100 80GB',x80,178);
+  c.fillStyle=css('--muted');c.textAlign='left';c.fillText('0',L,178);c.textAlign='right';c.fillText('160GB',R,178);
+  /* 보유 조각 그림 */
+  var h=setup($('#d1hold')),d=h.c,LL=70,RR=h.w-10,W=RR-LL,wts=[2,2,12],lbl=['가중치','기울기','옵티마이저 상태'];
+  var sh=[st>=3,st>=2,st>=1],gx=LL,gap=8,unit=(W-2*gap)/16;
+  font(d,11.5,'600');d.textAlign='center';d.textBaseline='middle';
+  for(var k2=0;k2<3;k2++){var gw=wts[k2]*unit,lt=gw<90?['W','G','옵티마이저'][k2]:lbl[k2]+(sh[k2]?' (샤딩)':'');d.fillStyle=css('--text-secondary');d.fillText(lt,gx+gw/2,10);
+    for(var gpu=0;gpu<4;gpu++){var yy=24+gpu*30;
+      for(var q=0;q<4;q++){var held=!sh[k2]||q===gpu,sx=gx+q*gw/4;
+        d.fillStyle=held?hexA(cols[k2],0.9):'transparent';d.fillRect(sx+1,yy,gw/4-2,22);
+        d.strokeStyle=css('--grid');d.strokeRect(sx+1.5,yy+.5,gw/4-3,21);}}
+    gx+=gw+gap;}
+  d.textAlign='right';d.fillStyle=css('--text-secondary');for(var gq=0;gq<4;gq++)d.fillText('GPU '+gq,LL-8,35+gq*30);
+  var pp=zeroParts(P,N,st),tt=pp[0]+pp[1]+pp[2],need=Math.ceil(16*P/HBM);
+  $('#d1out').innerHTML='<span>전체 학습 상태 16Ψ<b>'+gb(16*P)+'</b></span><span>'+names[st]+' 장치당<b>'+gb(tt)+'</b></span><span>80GB 대비<b style="color:'+(tt>HBM?css('--s8'):css('--good'))+'">'+(tt>HBM?'안 들어감':'들어감 (활성 제외)')+'</b></span><span>ZeRO-3로 상태만 담는 최소 GPU<b>'+fmtInt(need)+'대</b></span>';
+}
+$('#d1P').value=d1Slider(405e9);
+['#d1P','#d1N'].forEach(function(id){$(id).addEventListener('input',drawD1);});
+segInit('#d1st',drawD1);
+
+/* ══════ 데모 2 · 텐서 병렬 계산 대 통신 ══════ */
+/* Llama 3 405B 층 하나: d = 16384, FFN 53248, 쿼리 헤드 128, K·V 헤드 8 (헤드 차원 128) */
+var L3={d:16384,f:53248,kv:8*128};
+var L3_LAYER=2*L3.d*L3.d+2*L3.d*L3.kv+3*L3.d*L3.f;   /* Q,O + K,V + SwiGLU 3행렬 ≈ 3.19B */
+function drawD2(){
+  var tp=+segVal('#d2tp'),ln=segVal('#d2ln');
+  if(tp>8&&ln==='nv'){ln='ib';segSet('#d2ln','ib');}
+  var T=8192,F=400e12,bw=ln==='nv'?450e9:50e9;
+  var comp=2*L3_LAYER*T/tp/F, msg=T*L3.d*2, ar=tp>1?2*(tp-1)/tp*msg/bw:0, comm=2*ar;
+  var g=setup($('#d2cv')),c=g.c,L=10,R=g.w-10,tot=comp+comm,maxT=0.140,sc=(R-L)/Math.max(maxT,tot);
+  /* 순전파 한 층: 어텐션 계산 → all-reduce → MLP 계산 → all-reduce. 어텐션:MLP 계산 비는 파라미터 비로 둔다 */
+  var att=(2*L3.d*L3.d+2*L3.d*L3.kv)/L3_LAYER,segs=[[comp*att,'--s1','어텐션'],[ar,'--s8','AR'],[comp*(1-att),'--s1','MLP'],[ar,'--s8','AR']];
+  var x=L;font(c,11.5,'650');c.textBaseline='middle';c.textAlign='center';
+  segs.forEach(function(s){var w=s[0]*sc;if(w<=0)return;c.fillStyle=hexA(css(s[1]),s[1]==='--s1'?0.85:0.9);c.fillRect(x,30,Math.max(1,w-1),36);
+    if(w>34){c.fillStyle='#fff';c.fillText(s[2],x+w/2,48);}x+=w;});
+  c.strokeStyle=css('--axis');c.beginPath();c.moveTo(L,80);c.lineTo(R,80);c.stroke();
+  font(c,11,'500');c.fillStyle=css('--muted');c.textAlign='left';
+  for(var t=0;t<=Math.max(maxT,tot)+1e-9;t+=0.02){var xx=L+t*sc;if(xx>R-20)break;c.fillRect(xx,80,1,4);c.fillText(fmt(t*1000,0)+'ms',xx+2,96);}
+  c.fillStyle=css('--text-secondary');c.fillText('GPU 한 대의 순전파 한 층 (TP '+tp+', '+(ln==='nv'?'NVLink':'서버 사이 400Gb/s')+')',L,14);
+  $('#d2out').innerHTML='<span>계산<b>'+fmt(comp*1000,1)+' ms</b></span><span>all-reduce 2번<b>'+fmt(comm*1000,1)+' ms</b></span><span>통신 비중<b style="color:'+(comm>comp?css('--s8'):css('--text-primary'))+'">'+pct(comm/tot,0)+'</b></span><span>GPU당 헤드<b>'+(128/tp)+' (K·V '+(8/tp>=1?8/tp:'1을 '+tp/8+'대가 나눔')+')</b></span>';
+}
+segInit('#d2tp',drawD2);segInit('#d2ln',function(v){if(v==='nv'&&+segVal('#d2tp')>8){segSet('#d2tp',8);}drawD2();});
+
+/* ══════ 데모 3 · Mesh-TensorFlow 레이아웃 ══════ */
+var D3TXT={
+  rep:'<b>나누지 않음</b>: 8대가 X 전체 [8, 8]을 똑같이 듭니다. 메모리 절약 없음.',
+  dp:'<b>batch → 메시 전체 (8)</b>: 데이터 병렬. GPU마다 [1, 8]. 가중치는 이 레이아웃에서 나누지 않으므로 복제되고, 기울기를 더할 때 8대 all-reduce가 필요합니다.',
+  tp:'<b>hidden → 메시 전체 (8)</b>: 텐서 병렬. GPU마다 [8, 1]. hidden에 걸린 가중치 행렬도 같은 축으로 나뉘고, hidden을 합치는 행렬곱 뒤에 8대 all-reduce가 필요합니다.',
+  '2d':'<b>batch → 행 축(2), hidden → 열 축(4)</b>: 데이터 병렬 2 × 텐서 병렬 4. GPU마다 [4, 2]. 텐서 병렬 통신은 같은 행의 4대끼리, 기울기 all-reduce는 같은 열의 2대끼리만 합니다. 행 하나를 서버 하나에 맞추면 잦은 통신은 서버 안에 머뭅니다.'
+};
+function d3Owner(ly,b,h){return ly==='dp'?b:ly==='tp'?h:ly==='2d'?Math.floor(b/4)*4+Math.floor(h/2):-1;}
+function drawD3(){
+  var ly=segVal('#d3ly'),g=setup($('#d3cv')),c=g.c,cs=Math.min(24,(g.w*0.45-40)/8),ox=40,oy=34;
+  font(c,12,'650');c.fillStyle=css('--text-secondary');c.textAlign='left';c.textBaseline='middle';c.fillText('X [batch, hidden]',ox,14);
+  for(var b=0;b<8;b++)for(var h=0;h<8;h++){var o=d3Owner(ly,b,h);
+    c.fillStyle=o<0?hexA(css('--muted'),0.35):hexA(pal(o),0.85);c.fillRect(ox+h*cs+1,oy+b*cs+1,cs-2,cs-2);}
+  font(c,11,'500');c.fillStyle=css('--muted');c.textAlign='center';c.fillText('hidden →',ox+4*cs,oy+8*cs+14);
+  c.save();c.translate(ox-14,oy+4*cs);c.rotate(-Math.PI/2);c.fillText('batch →',0,0);c.restore();
+  /* 오른쪽: 2 × 4 메시 */
+  var mx=ox+8*cs+40,mw=(g.w-mx-10)/4,mh=Math.min(96,(8*cs)/2);
+  font(c,12,'650');c.textAlign='left';c.fillStyle=css('--text-secondary');c.fillText('장치 메시 2 × 4 (행 축 × 열 축)',mx,14);
+  for(var r=0;r<2;r++)for(var q=0;q<4;q++){var d=r*4+q,x=mx+q*mw,y=oy+r*(mh+8);
+    c.strokeStyle=css('--border');c.fillStyle=css('--surface-1');c.fillRect(x+3,y,mw-6,mh);c.strokeRect(x+3.5,y+.5,mw-7,mh-1);
+    var shp=ly==='rep'?[8,8]:ly==='dp'?[1,8]:ly==='tp'?[8,1]:[4,2],u=Math.min((mw-24)/8,(mh-34)/8);
+    c.fillStyle=ly==='rep'?hexA(css('--muted'),0.45):hexA(pal(d),0.85);c.fillRect(x+(mw-shp[1]*u)/2,y+8,shp[1]*u,shp[0]*u);
+    font(c,11,'600');c.fillStyle=css('--text-primary');c.textAlign='center';c.fillText('GPU '+d+' · ['+shp[0]+', '+shp[1]+']',x+mw/2,y+mh-10);}
+  $('#d3out').innerHTML=D3TXT[ly];
+}
+segInit('#d3ly',drawD3);
+
+/* ══════ 데모 4 · 파이프라인 버블 ══════ */
+function bubble(p,m,v){return (p-1)/(v*m+p-1);}
+function drawD4(){
+  var p=+$('#d4p').value,m=+$('#d4m').value,v=+$('#d4v').value;
+  $('#d4pv').textContent=p;$('#d4mv').textContent=m;$('#d4vv').textContent=v;
+  var g=setup($('#d4cv')),c=g.c,L=40,R=g.w-10,T=10,B=g.h-24,bw=(R-L)/64;
+  c.strokeStyle=css('--grid');font(c,11,'500');c.fillStyle=css('--muted');c.textAlign='right';c.textBaseline='middle';
+  [0,0.25,0.5,0.75,1].forEach(function(f){var y=B-(B-T)*f;c.beginPath();c.moveTo(L,y);c.lineTo(R,y);c.stroke();c.fillText(pct(f,0),L-4,y);});
+  for(var k=1;k<=64;k++){var f=bubble(p,k,v),h=(B-T)*f;c.fillStyle=k===m?css('--s2'):hexA(css('--s2'),0.3);c.fillRect(L+(k-1)*bw+1,B-h,bw-2,h);}
+  c.textAlign='center';c.fillStyle=css('--muted');[1,16,32,48,64].forEach(function(k){c.fillText(k,L+(k-0.5)*bw,B+12);});
+  var need=Math.ceil(9*(p-1)/v);
+  $('#d4out').innerHTML='<span>유휴 비율<b>'+pct(bubble(p,m,v))+'</b></span><span>v = 1일 때<b>'+pct(bubble(p,m,1))+'</b></span><span>유휴 10% 아래로 필요한 m<b>'+(p===1?'—':need+' 이상')+'</b></span>';
+}
+['#d4p','#d4m','#d4v'].forEach(function(id){$(id).addEventListener('input',drawD4);});
+
+/* ══════ 데모 5 · 컨텍스트 병렬 부하 균형 ══════ */
+function cpOwner(row,cp,md){var n=16;if(md==='seq')return Math.floor(row/(n/cp));
+  var sz=n/(2*cp),ch=Math.floor(row/sz);return ch<cp?ch:2*cp-1-ch;}
+function drawD5(){
+  var cp=+segVal('#d5cp'),md=segVal('#d5md'),cv=$('#d5cv'),nar=cv.clientWidth<520,cs=nar?Math.min(14.5,(cv.clientWidth-16)/16):Math.min(14.5,(cv.clientWidth*0.5)/16),ox=8,oy=10,work=[];
+  cv.dataset.h=nar?Math.round(oy+16*cs+44+cp*22):260;var g=setup(cv),c=g.c;
+  for(var i=0;i<cp;i++)work.push(0);
+  for(var r=0;r<16;r++){var o=cpOwner(r,cp,md);work[o]+=r+1;
+    for(var k=0;k<16;k++){c.fillStyle=k<=r?hexA(pal(o),0.85):hexA(css('--grid'),0.6);c.fillRect(ox+k*cs+.5,oy+r*cs+.5,cs-1,cs-1);}}
+  font(c,11,'500');c.fillStyle=css('--muted');c.textAlign='left';c.textBaseline='middle';c.fillText('키(K·V) →',ox,oy+16*cs+12);
+  var bx=nar?58:ox+16*cs+60,by=nar?oy+16*cs+26:oy+16,bwid=g.w-bx-40,mx=Math.max.apply(null,work),scale=bwid/136,rh=nar?22:Math.min(26,(16*cs)/cp);
+  font(c,12,'600');c.fillStyle=css('--text-secondary');c.textAlign='left';c.fillText('GPU별 계산량 (칸)',nar?g.w-120:bx,nar?oy+16*cs+12:oy+4);
+  for(var j=0;j<cp;j++){var y=by+j*rh;c.fillStyle=hexA(pal(j),0.85);c.fillRect(bx,y,work[j]*scale,rh-5);
+    c.fillStyle=css('--text-secondary');c.textAlign='right';c.fillText('GPU '+j,bx-6,y+(rh-5)/2);
+    c.textAlign='left';c.fillStyle=css('--text-primary');c.fillText(work[j],bx+work[j]*scale+5,y+(rh-5)/2);}
+  var avg=136/cp;
+  $('#d5out').innerHTML='<span>가장 바쁜 GPU<b>'+mx+'칸</b></span><span>평균<b>'+fmt(avg,1)+'칸</b></span><span>가장 바쁜 GPU 대비 효율<b>'+pct(avg/mx,0)+'</b></span>';
+}
+segInit('#d5cp',drawD5);segInit('#d5md',drawD5);
+
+/* ══════ 전문가 병렬 그림 ══════ */
+function drawEP(){
+  var gEl=$('#epfig'),s='',ns='http://www.w3.org/2000/svg',route=[[0,5,2],[7,1,3],[4,4,6],[2,0,7]];
+  var cw=190,gap=20,x0=20;
+  for(var g=0;g<4;g++){var x=x0+g*(cw+gap);
+    s+='<rect x="'+x+'" y="34" width="'+cw+'" height="40" rx="8" fill="none" stroke="'+css('--border')+'"/>';
+    s+='<text x="'+(x+8)+'" y="58" font-size="11" class="m">GPU '+g+' 토큰</text>';
+    s+='<rect x="'+x+'" y="140" width="'+cw+'" height="44" rx="8" fill="none" stroke="'+css('--border')+'"/>';
+    for(var e=0;e<2;e++){var ex=x+18+e*88;s+='<rect x="'+ex+'" y="148" width="66" height="28" rx="6" fill="'+hexA(css('--s8'),0.18)+'" stroke="'+css('--s8')+'"/><text x="'+(ex+33)+'" y="167" font-size="12" text-anchor="middle" font-weight="650">전문가 '+(g*2+e)+'</text>';}
+  }
+  for(var g2=0;g2<4;g2++)for(var t=0;t<3;t++){var tx=x0+g2*(cw+gap)+92+t*32,ex2=route[g2][t],eg=Math.floor(ex2/2),exx=x0+eg*(cw+gap)+18+(ex2%2)*88+33;
+    s+='<path d="M'+tx+' 64 C '+tx+' 110, '+exx+' 100, '+exx+' 146" stroke="'+hexA(pal(g2),0.8)+'" stroke-width="1.6" fill="none"/>';
+    s+='<circle cx="'+tx+'" cy="54" r="7" fill="'+pal(g2)+'"/>';}
+  s+='<text x="830" y="20" font-size="11.5" text-anchor="end" class="m">토큰 → 전문가: all-to-all · 계산 뒤 다시 all-to-all로 돌려받음</text>';
+  gEl.innerHTML=s;
+}
+
+/* ══════ 데모 6 · 16대 4D 그룹 (Llama 3 그림 5) ══════ */
+var d6Sel=0;
+function coords(r){return {tp:r&1,cp:(r>>1)&1,pp:(r>>2)&1,dp:(r>>3)&1};}
+var AXBIT={tp:1,cp:2,pp:4,dp:8};
+function drawD6(){
+  var ax=segVal('#d6ax'),bit=AXBIT[ax],svg=$('#d6svg'),s='',bw=88,bh=62,gx=10,gy=14,nar=svg.parentNode.clientWidth<600;
+  svg.setAttribute('viewBox',nar?'0 0 400 480':'0 0 840 250');
+  /* 그룹 번호: 이 축의 좌표를 지운 rank를 0..7로 압축 */
+  function gid(r){var base=r&~bit,i=0;for(var q=0;q<16;q++){if((q&bit)===0){if(q===base)return i;i++;}}return 0;}
+  for(var dp=0;dp<2;dp++){
+    s+='<text x="10" y="'+(gy+dp*(nar?236:118)+8)+'" font-size="11.5" class="m">DP 복제본 '+dp+'</text>';
+    for(var pp=0;pp<2;pp++){var sx=nar?gx+2:gx+pp*416,sy=nar?gy+dp*236+16+pp*108:gy+dp*118+16;
+      s+='<rect x="'+(sx-4)+'" y="'+(sy-4)+'" width="'+(4*(bw+6)+2)+'" height="'+(bh+26)+'" rx="10" fill="none" stroke="'+css('--axis')+'" stroke-dasharray="4 4"/>';
+      s+='<text x="'+(sx+4*(bw+6)-6)+'" y="'+(sy+bh+16)+'" font-size="11" text-anchor="end" class="m">서버 · PP 스테이지 '+pp+'</text>';
+      for(var cp=0;cp<2;cp++)for(var tp=0;tp<2;tp++){var r=tp+2*cp+4*pp+8*dp,x=sx+(cp*2+tp)*(bw+6),y=sy,col=pal(gid(r));
+        var inG=(r&~bit)===(d6Sel&~bit),sel=r===d6Sel;
+        s+='<g class="gpu" data-r="'+r+'"><rect x="'+x+'" y="'+y+'" width="'+bw+'" height="'+bh+'" rx="8" fill="'+hexA(col,0.22)+'" stroke="'+(sel?css('--text-primary'):inG?col:hexA(col,0.6))+'" stroke-width="'+(sel?3:inG?2.2:1)+'"/>';
+        s+='<text x="'+(x+bw/2)+'" y="'+(y+24)+'" font-size="13" font-weight="700" text-anchor="middle">GPU '+r+'</text>';
+        s+='<text x="'+(x+bw/2)+'" y="'+(y+44)+'" font-size="10.5" text-anchor="middle" class="m">t'+tp+' c'+cp+' p'+pp+' d'+dp+'</text></g>';}
+    }
+  }
+  svg.innerHTML=s;
+  var o=coords(d6Sel),nm={tp:'TP',cp:'CP',pp:'PP',dp:'DP'};
+  var mates=['tp','cp','pp','dp'].map(function(a){return '<span class="ax-'+a+'"><b style="color:inherit">'+nm[a]+'</b></span> 짝 GPU '+(d6Sel^AXBIT[a]);}).join(' · ');
+  $('#d6out').innerHTML='<b>GPU '+d6Sel+'</b> = (tp '+o.tp+', cp '+o.cp+', pp '+o.pp+', dp '+o.dp+') — 모델의 <b>'+(o.pp?'뒤':'앞')+' 절반 층</b>(PP)에서, 각 층 행렬과 어텐션 헤드의 <b>'+(o.tp?'둘째':'첫째')+' 절반</b>(TP)을, 시퀀스 조각 <b>'+(o.cp?'1과 2':'0과 3')+'</b>(CP, 4조각을 앞뒤로 짝지음)에 대해, 데이터 배치의 <b>'+(o.dp?'둘째':'첫째')+' 절반</b>(DP)으로 계산합니다.<br>'+mates;
+}
+$('#d6svg').addEventListener('click',function(e){var gg=e.target.closest('.gpu');if(!gg)return;d6Sel=+gg.dataset.r;drawD6();});
+segInit('#d6ax',drawD6);
+
+/* ══════ 데모 7 · Llama 3 표 4 ══════ */
+var T4=[{g:8192,tp:8,cp:1,pp:16,dp:64,seq:8192,b:32,tf:430,mfu:43},{g:16384,tp:8,cp:1,pp:16,dp:128,seq:8192,b:16,tf:400,mfu:41},{g:16384,tp:8,cp:16,pp:16,dp:8,seq:131072,b:16,tf:380,mfu:38}];
+function drawD7(){
+  var row=T4[+segVal('#d7row')],cv=$('#d7cv'),w=cv.clientWidth,per=4,gapR=Math.max(3,w/120);
+  var s=(w-20-(per-1)*gapR)/(per*row.pp),repRows=Math.ceil(row.dp/per),repH=row.cp*s;
+  cv.dataset.h=Math.round(20+repRows*(repH+gapR));
+  var g=setup(cv),c=g.c,acc=css('--s2');
+  for(var d=0;d<row.dp;d++){var rx=10+(d%per)*(per*0+row.pp*s+gapR),ry=16+Math.floor(d/per)*(repH+gapR);
+    for(var p=0;p<row.pp;p++)for(var q=0;q<row.cp;q++){c.fillStyle=hexA(acc,0.25+0.75*p/(row.pp-1));c.fillRect(rx+p*s+0.5,ry+q*s+0.5,Math.max(1,s-1),Math.max(1,s-1));}
+    c.strokeStyle=css('--text-secondary');c.lineWidth=1;c.strokeRect(rx+.5,ry+.5,row.pp*s-1,repH-1);}
+  font(c,11,'600');c.fillStyle=css('--muted');c.textAlign='left';c.textBaseline='middle';
+  c.fillText('모델 복제본 '+row.dp+'개 (DP '+row.dp+') · 복제본 하나 = PP '+row.pp+' × CP '+row.cp+' = 노드 '+(row.pp*row.cp)+'개',10,8);
+  var pg=405e9/(row.tp*row.pp),tok=row.seq*row.b*row.dp;
+  $('#d7out').innerHTML='<span>GPU<b>'+fmtInt(row.g)+'</b></span><span>노드(서버)<b>'+fmtInt(row.g/8)+'</b></span><span>스테이지별 층<b>7 · 8 × 14 · 7</b></span><span>GPU당 파라미터 (÷ TP·PP)<b>'+fmt(pg/1e9,2)+'B · bf16 '+fmt(pg*2/1e9,1)+'GB</b></span><span>배치당 토큰<b>'+fmt(tok/1e6,1)+'M</b></span><span>GPU당 성능<b>'+row.tf+' TFLOP/s · MFU '+row.mfu+'%</b></span>';
+}
+segInit('#d7row',drawD7);
+
+/* ══════ 퀴즈 ══════ */
+var QZ=[
+ {q:'"순수 파이프라인 병렬화는 마지못한 최후 수단"이라는 말에서 파이프라인 병렬화에 해당하는 것은?',o:['GPipe 계열 (1F1B, interleaved 포함)','Megatron-LM의 텐서 병렬','ZeRO','Mesh-TensorFlow'],a:0,e:'나머지 셋은 텐서 병렬, 데이터 병렬 개선, 일반화된 샤딩입니다. 이들이 오히려 파이프라인 대신 무거운 일을 맡게 됐습니다.'},
+ {q:'텐서 병렬을 보통 한 서버(NVLink로 묶인 GPU 8대) 안에서만 쓰는 이유는?',o:['GPU 8대를 넘으면 행렬을 나눌 수 없어서','층마다 활성 all-reduce가 계산 경로 위에 놓여, 대역폭이 모자라면 바로 느려져서','옵티마이저 상태를 샤딩할 수 없어서','파이프라인 버블이 생겨서'],a:1,e:'데모 2처럼 TP 8을 서버 사이 400Gb/s로 묶으면 all-reduce 시간이 계산 시간을 넘습니다.'},
+ {q:'405B 모델(파라미터당 16바이트)을 ZeRO-3, 데이터 병렬 64로 나누면 GPU당 상태 메모리는 대략?',o:['약 6GB','약 25GB','약 101GB','약 6.5TB'],a:2,e:'405B × 16 ÷ 64 ≈ 101GB로, 활성을 넣기도 전에 80GB를 넘습니다. 그래서 TP·PP로 모델 자체를 더 잘라야 합니다.'},
+ {q:'Mesh-TensorFlow 레이아웃에서 batch 차원만 장치 축에 나누면 어떤 병렬화가 되나?',o:['텐서 병렬','파이프라인 병렬','데이터 병렬','전문가 병렬'],a:2,e:'배치를 나누고 가중치는 복제하는 것이 데이터 병렬입니다. hidden을 나누면 텐서 병렬이 됩니다.'},
+ {q:'인과 마스크가 있는 어텐션에서 시퀀스를 순서대로 CP개로 자르면 생기는 문제와 Llama 3의 해법은?',o:['첫 GPU가 일을 몰아서 함 → 링 어텐션','마지막 GPU가 일을 몰아서 함 → 2·CP 조각으로 잘라 앞뒤 조각을 짝지어 배정','K·V가 너무 커짐 → GQA','버블이 생김 → interleaved 스케줄'],a:1,e:'뒤쪽 쿼리일수록 볼 키가 많습니다. i번째와 (2·CP−1−i)번째 조각을 묶으면 GPU마다 일이 같아집니다(데모 5).'},
+ {q:'Llama 3 405B를 8K 문맥으로 사전학습할 때(표 4 위 두 행) 쓰지 않은 축은?',o:['텐서 병렬','파이프라인 병렬','컨텍스트 병렬 (CP = 1)','데이터 병렬'],a:2,e:'CP는 128K 장문맥 단계에서 16으로 켭니다. 405B는 밀집 모델이라 전문가 병렬도 없습니다.'},
+ {q:'Llama 3가 병렬화 축을 [TP, CP, PP, DP] 순서로 둔 기준은?',o:['논문 발표 순서','안쪽 축일수록 더 큰 대역폭·더 짧은 지연이 필요하므로 가까운 GPU끼리 묶기 위해','GPU 수가 많은 축부터','메모리를 많이 줄이는 축부터'],a:1,e:'가장 안쪽 TP는 같은 서버 안, 통신이 드물고 계산과 겹치기 쉬운 DP는 가장 바깥에 둡니다.'}
+];
+(function(){var box=$('#quiz'),score=0,done=0;
+  QZ.forEach(function(it,i){var d=document.createElement('div');d.className='q';
+    d.innerHTML='<h4>Q'+(i+1)+'. '+it.q+'</h4>'+it.o.map(function(o,j){return '<label class="opt"><input type="radio" name="q'+i+'" value="'+j+'"><span>'+o+'</span></label>';}).join('')+'<div class="expl"></div>';
+    box.appendChild(d);
+    d.querySelectorAll('input').forEach(function(inp){inp.addEventListener('change',function(){
+      if(d.dataset.done)return;d.dataset.done=1;done++;
+      var j=+inp.value,ok=j===it.a;if(ok)score++;
+      d.querySelectorAll('.opt').forEach(function(l,x){if(x===it.a)l.classList.add('correct');else if(x===j)l.classList.add('wrong');});
+      var ex=d.querySelector('.expl');ex.textContent=(ok?'정답! ':'오답. ')+it.e;ex.classList.add('show');if(!ok)ex.classList.add('bad');
+      $('#quizScore').textContent=done+'문제 중 '+score+'개 정답'+(done===QZ.length?' — 끝!':'');
+    });});
+  });
+})();
+
+/* ══════ 테마·초기화 ══════ */
+function drawAll(){drawD1();drawD2();drawD3();drawD4();drawD5();drawEP();drawD6();drawD7();}
+var tbtn=$('#themeBtn');
+if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)document.documentElement.setAttribute('data-theme','dark');
+function syncBtn(){tbtn.textContent=document.documentElement.getAttribute('data-theme')==='dark'?'◑ 라이트':'◐ 다크';}
+tbtn.addEventListener('click',function(){var d=document.documentElement.getAttribute('data-theme')==='dark';
+  document.documentElement.setAttribute('data-theme',d?'light':'dark');cssCache={};syncBtn();drawAll();});
+syncBtn();drawAll();
+/* 모바일은 스크롤할 때 주소창이 접히며 resize가 계속 온다. 폭이 바뀔 때만 다시 그린다 */
+var rz,lastW=document.documentElement.clientWidth;
+window.addEventListener('resize',function(){clearTimeout(rz);rz=setTimeout(function(){
+  var w=document.documentElement.clientWidth;if(w===lastW)return;lastW=w;drawAll();},120);});
+var KX={delimiters:[{left:'$$',right:'$$',display:true},{left:'\\(',right:'\\)',display:false}]};
+document.addEventListener('DOMContentLoaded',function(){if(window.renderMathInElement)renderMathInElement(document.body,KX);});
+window.addEventListener('load',function(){if(window.renderMathInElement&&!document.querySelector('.katex'))renderMathInElement(document.body,KX);});
+</script>
+</body>
+</html>
